@@ -4,16 +4,38 @@ __author__ = 'coen'
 
 import time
 import logging
+import logging.handlers
 import multiprocessing
 
 from Queue import Full, Empty
 
+get_logger = multiprocessing.get_logger
+
+
+def configure_logger(logfile='mpfileprocessor.log', loglevel=logging.DEBUG):
+    logger = get_logger()
+
+    logger.setLevel(loglevel)
+    handler = logging.handlers.RotatingFileHandler(
+        logfile, maxBytes=100000, backupCount=100)
+    formatter = logging.Formatter('%(asctime)s-%(levelname)s-[%(processName)s-%(process)d] - %(message)s')
+    handler.setFormatter(formatter)
+
+    # TODO: think about log formatting
+
+    logger.addHandler(handler)
+    logger.debug("Logger configured using module function")
+    return logger
+
 
 class LoggingProcess(multiprocessing.Process):
-    def __init__(self, name="unknown"):
+    def __init__(self, name=None):
         super(LoggingProcess, self).__init__()
         self.logger = multiprocessing.get_logger()
-        self.name = name
+        if name is None:
+            self.name = self.__class__.__name__
+        else:
+            self.name = name
 
     def debug(self, m):
         self.log(logging.DEBUG, m)
@@ -28,7 +50,7 @@ class LoggingProcess(multiprocessing.Process):
         self.log(logging.ERROR, m)
 
     def log(self, level, m):
-        self.logger.log(level, "{0}: {1}".format(self.name, m))
+        self.logger.log(level, m)
 
 
 class QueueHandler(object):
@@ -87,6 +109,38 @@ class FileProcessor(LoggingProcess):
         self.filename = filename
         self.debug("Fileprocessor {0} initiated for file {1}"
                    .format(self.name, self.filename))
+
+
+class LineProcessor(LoggingProcess):
+
+    def __init__(self, in_q, out_q, function, **kwargs):
+        if 'name' in kwargs:
+            super(LineProcessor, self).__init__(kwargs['name'])
+        else:
+            super(LineProcessor, self).__init__()
+        self.in_q = QueueHandler(in_q)
+        self.out_q = QueueHandler(out_q)
+        self.processLine = function
+        self.debug("Processor initiated...")
+
+    def run(self):
+        qempty = False
+        self.debug("Starting main loop")
+        while not qempty:
+            try:
+                line = self.in_q.get()
+            except Empty:
+                self.info("Queue empty, exiting...")
+                qempty = True
+            else:
+                processed = self.processLine(line)
+                try:
+                    self.out_q.put(processed)
+                except Full:
+                    self.error("Output queue is full! exiting, DATA LOSS!")
+                    self.qempty = True
+                finally:
+                    self.in_q.q.task_done()
 
 
 class FileReader(FileProcessor):
@@ -150,8 +204,7 @@ class FileReader(FileProcessor):
             count = int(round(
                 float(filesize) /
                 (float(linesize_estimate))))
-            self.info("Estimated {0} lines in {1} " +
-                      "({2} bytes, estimated {3} bytes/line)"
+            self.info("Estimated {0} lines in {1} ({2} bytes, estimated {3} bytes/line)"
                       .format(count,
                               self.filename,
                               filesize,
@@ -181,19 +234,17 @@ class FileReader(FileProcessor):
                     read = i + 1
                     time_pass = float(time.time() - start)
                     speed = float(read) / time_pass
-                    cur_speed = (read - float(est_block_read)) / \
+                    cur_speed = float(read - float(est_block_read)) / \
                                 (float(time.time() / est_block_start))
                     if count > 0:
                         est_remaining = (count - read) * cur_speed
-                        self.info("Read {0} of {1} lines in {2} seconds, " +
-                                  "avg. {3} lines/sec, cur. {4} lines/sec" +
-                                  "approx. {5} seconds remaining."
-                                  .format(read, count,
-                                          time_pass, speed, cur_speed,
-                                          est_remaining))
+                        self.info(
+                            "Read {0} of {1} lines in {2} seconds, avg. {3} lines/sec, cur. {4} lines/sec approx. {5} seconds remaining."
+                            .format(read, count,
+                                    time_pass, speed, cur_speed,
+                                    est_remaining))
                     else:
-                        self.info("Read {0} lines in {1} seconds. " +
-                                  "avg. {2} lines/sec, cur. {3} lines/sec"
+                        self.info("Read {0} lines in {1} seconds. avg. {2} lines/sec, cur. {3} lines/sec"
                                   .format(read, time_pass, speed, cur_speed))
                     est_block_start = time.time()
                     est_block_read = read
@@ -205,17 +256,28 @@ class FileReader(FileProcessor):
         read = i + 1
         time_pass = float(time.time() - start)
         speed = float(read) / time_pass
-        self.info("Finished reading file, wrote {0} lines to queue " +
-                  "in {1} seconds, {2} lines/sec."
-                  , format(read, time_pass, speed))
+        self.info("Finished reading file, wrote {0} lines to queue in {1} seconds, {2} lines/sec."
+                  .format(read, time_pass, speed))
+        self.q.q.close()
 
 
 class FileWriter(FileProcessor):
     def __init__(self, filename, queue, **kwargs):
+        """
+
+        :param filename:
+        :param queue:
+        :param kwargs: overwrite (boolean, default=False)
+        :return:
+        """
         super(FileWriter, self).__init__(filename, queue, **kwargs)
+        if 'overwrite' in kwargs:
+            self.overwrite = kwargs['overwrite']
+        else:
+            self.overwrite = False
 
     def run(self):
-        with open(filename, 'a') as f_obj:
+        with open(self.filename, 'w') as f_obj:
             start = time.time()
             qempty = False
             written = 0
@@ -227,25 +289,25 @@ class FileWriter(FileProcessor):
                         f_obj.write(line)
                     else:
                         f_obj.write(line + '\n')
+                    self.q.q.task_done()
+                    written += 1
                     if written % self.outputpernlines == 0:
-                        self.outputSpeedStats(written, start)
+                        self.outputspeedstats(written, start)
 
                 except Empty:
                     self.info("Queue is empty after {0} retries"
                               .format(self.q.retries))
-                    self.qempty = True
+                    qempty = True
             f_obj.flush()
-            os.fsync()
-        self.outputSpeedStats(written, start)
+            os.fsync(f_obj)
+        self.outputspeedstats(written, start)
         self.info("Exiting, wrote entire queue to {0}"
                   .format(self.filename))
 
-    def outputSpeedStats(self, written, start):
-        written += 1
+    def outputspeedstats(self, written, start):
         time_pass = float(time.time() - start)
         speed = float(written) / time_pass
-        self.info("Wrote {0} lines in {1} seconds. " +
-                  "{2} lines/sec"
+        self.info("Wrote {0} lines in {1} seconds. {2} lines/sec"
                   .format(written, time_pass, speed))
 
 
