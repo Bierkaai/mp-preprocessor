@@ -111,13 +111,12 @@ class FileProcessor(LoggingProcess):
                    .format(self.name, self.filename))
 
 
-class LineProcessor(LoggingProcess):
-
-    def __init__(self, in_q, out_q, function, **kwargs):
+class BaseLineProcessor(LoggingProcess):
+    def __init__(self, in_q, out_q, **kwargs):
         if 'name' in kwargs:
-            super(LineProcessor, self).__init__(kwargs['name'])
+            super(BaseLineProcessor, self).__init__(kwargs['name'])
         else:
-            super(LineProcessor, self).__init__()
+            super(BaseLineProcessor, self).__init__()
         self.in_q = QueueHandler(in_q)
         self.out_q = QueueHandler(out_q)
         self.processLine = function
@@ -138,9 +137,17 @@ class LineProcessor(LoggingProcess):
                     self.out_q.put(processed)
                 except Full:
                     self.error("Output queue is full! exiting, DATA LOSS!")
-                    self.qempty = True
+                    qempty = True
                 finally:
                     self.in_q.q.task_done()
+
+
+class FunctionLineProcessor(BaseLineProcessor):
+    def __init__(self, in_q, out_q, function, **kwargs):
+        super(FunctionLineProcessor, self).__init__(
+            in_q, out_q, **kwargs
+        )
+        self.processLine = function
 
 
 class FileReader(FileProcessor):

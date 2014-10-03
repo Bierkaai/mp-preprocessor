@@ -24,11 +24,11 @@ if __name__ == "__main__":
     writer = mpfileprocessor.FileWriter(
         'out.dat', writerqueue, outputpernlines=1, overwrite=True,
         timeout=1, retries=2)
-    processor1 = mpfileprocessor.LineProcessor(
+    processor1 = mpfileprocessor.FunctionLineProcessor(
         readerqueue, writerqueue, duplicate, name='LineDuplicator1',
         timeout=1, retries=2
     )
-    processor2 = mpfileprocessor.LineProcessor(
+    processor2 = mpfileprocessor.FunctionLineProcessor(
         readerqueue, writerqueue, duplicate, name='LineDuplicator2',
         timeout=1, retries=2
     )
